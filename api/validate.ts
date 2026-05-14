@@ -1,6 +1,7 @@
 // @ts-nocheck
-// Vercel Serverless Function — validates access codes
-// Valid codes stored in VALID_CODES environment variable (JSON array)
+// Vercel Serverless Function — validates access codes and returns user role
+// RLB- prefix codes = consultant (full Client Library access)
+// TM- prefix codes = client (single-model view only)
 
 export default function handler(req: any, res: any) {
   // CORS headers
@@ -26,12 +27,25 @@ export default function handler(req: any, res: any) {
       validCodes = raw.split(',').map((c: string) => c.trim()).filter(Boolean);
     }
 
-    // Admin password always works as fallback
+    // Admin password always works as fallback (consultant role)
     const ADMIN_CODE = process.env.ADMIN_CODE || '';
 
-    const isValid = validCodes.includes(code.trim()) || (ADMIN_CODE && code.trim() === ADMIN_CODE);
+    const trimmedCode = code.trim().toUpperCase();
+    const isValid = validCodes.includes(trimmedCode) || (ADMIN_CODE && trimmedCode === ADMIN_CODE);
 
-    return res.status(isValid ? 200 : 401).json({ valid: isValid });
+    if (!isValid) {
+      return res.status(401).json({ valid: false });
+    }
+
+    // Determine role from code prefix
+    // RLB- codes = consultant (Right Lane Brands internal — full Client Library)
+    // TM- codes = client (single-model, clean experience)
+    // Admin code = consultant
+    const role = trimmedCode.startsWith('RLB-') ? 'consultant'
+               : (ADMIN_CODE && trimmedCode === ADMIN_CODE) ? 'consultant'
+               : 'client';
+
+    return res.status(200).json({ valid: true, role });
   } catch (err) {
     return res.status(500).json({ valid: false, error: 'Server error' });
   }

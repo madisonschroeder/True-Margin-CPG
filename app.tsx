@@ -22,7 +22,8 @@ import { PipelineActuals } from './components/PipelineActuals';
 import { VelocityTracker } from './components/VelocityTracker';
 import { WhatIfLab } from './components/WhatIfLab';
 import ChatPanel from './components/ChatPanel';
-import { Truck, Store, ShoppingCart, Globe, Utensils, LayoutDashboard, Building2, Scale, Activity, Package, ShieldCheck, Crosshair, FileText, Download, Upload, TrendingUp, MessageCircle, Target, GitBranch } from 'lucide-react';
+import { ClientLibrary } from './components/ClientLibrary';
+import { Truck, Store, ShoppingCart, Globe, Utensils, LayoutDashboard, Building2, Scale, Activity, Package, ShieldCheck, Crosshair, FileText, Download, Upload, TrendingUp, MessageCircle, Target, GitBranch, FolderOpen } from 'lucide-react';
 import { StageIndicator, CategorySelector, ChannelBenchmarkBar } from './components/BenchmarkBrain';
 
 // ── Session types and helpers ──────────────────────────────────────────────────
@@ -50,6 +51,7 @@ interface SessionData {
 interface SessionMeta {
   id: string;
   name: string;
+  notes: string;
   lastModified: string;
 }
 
@@ -144,10 +146,11 @@ const App: React.FC = () => {
   // ── Session state ──────────────────────────────────────────────────────────
   const [sessions, setSessions] = useState<Session[]>(() => {
     const existing = loadSessions();
-    if (existing.length > 0) return existing;
+    if (existing.length > 0) return existing.map(s => ({ ...s, notes: s.notes || '' }));
     const defaultSession: Session = {
       id: generateId(),
-      name: 'New Model',
+      name: 'New Client',
+      notes: '',
       lastModified: new Date().toISOString(),
       data: makeDefaultSessionData(),
     };
@@ -199,7 +202,16 @@ const App: React.FC = () => {
     setPipelineDeals(prev => [...prev, deal]);
   };
 
-  // ── Session UI state ───────────────────────────────────────────────────────
+  // ── Role-based access ──────────────────────────────────────────────────────
+  // 'consultant' = RLB internal — full Client Library, multi-client management
+  // 'client' = paying customer — single model, clean UI, no library/switcher
+  const userRole = (() => {
+    try { return localStorage.getItem('tm_user_role') || 'client'; } catch { return 'client'; }
+  })() as 'consultant' | 'client';
+  const isConsultant = userRole === 'consultant';
+
+  // ── Client Library UI state ────────────────────────────────────────────────
+  const [showClientLibrary, setShowClientLibrary] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
@@ -303,7 +315,8 @@ const App: React.FC = () => {
   const handleNewSession = () => {
     const newSession: Session = {
       id: generateId(),
-      name: 'New Model',
+      name: 'New Client',
+      notes: '',
       lastModified: new Date().toISOString(),
       data: makeDefaultSessionData(),
     };
@@ -376,6 +389,28 @@ const App: React.FC = () => {
   const handleRenameSession = (id: string, newName: string) => {
     const trimmed = newName.trim() || 'Untitled';
     const updated = sessions.map(s => s.id === id ? { ...s, name: trimmed } : s);
+    setSessions(updated);
+    saveSessions(updated);
+  };
+
+  const handleDuplicateSession = (id: string) => {
+    const source = sessions.find(s => s.id === id);
+    if (!source) return;
+    const newSession: Session = {
+      id: generateId(),
+      name: `${source.name} (Copy)`,
+      notes: source.notes || '',
+      lastModified: new Date().toISOString(),
+      data: JSON.parse(JSON.stringify(source.data)),
+    };
+    const updated = [...sessions, newSession];
+    setSessions(updated);
+    saveSessions(updated);
+    switchToSession(newSession.id, updated);
+  };
+
+  const handleUpdateNotes = (id: string, notes: string) => {
+    const updated = sessions.map(s => s.id === id ? { ...s, notes } : s);
     setSessions(updated);
     saveSessions(updated);
   };
@@ -808,68 +843,84 @@ const App: React.FC = () => {
 
         <div className="w-px h-6 bg-base-content/15 mx-1"></div>
 
-        {/* Session dropdown */}
-        <div className="relative" ref={dropdownRef}>
-          <button
-            onClick={() => setSessionDropdownOpen(!sessionDropdownOpen)}
-            className="btn btn-ghost btn-sm gap-1 font-medium"
-          >
-            <span className="max-w-[150px] truncate">{activeSession?.name || 'New Model'}</span>
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-          </button>
+        {/* Client file selector — CONSULTANT ONLY */}
+        {isConsultant && (
+          <div className="relative" ref={dropdownRef}>
+            <button
+              onClick={() => setSessionDropdownOpen(!sessionDropdownOpen)}
+              className="btn btn-ghost btn-sm gap-1 font-medium"
+            >
+              <FolderOpen size={14} className="text-primary" />
+              <span className="max-w-[150px] truncate">{activeSession?.name || 'New Client'}</span>
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </button>
 
-          {sessionDropdownOpen && (
-            <div className="absolute top-full left-0 mt-1 w-72 bg-base-100 border border-base-300 rounded-lg shadow-xl z-50 overflow-hidden">
-              <div className="p-2 border-b border-base-300 text-xs text-base-content/50 font-medium uppercase tracking-wider px-3">Sessions</div>
-              <div className="max-h-60 overflow-y-auto">
-                {sessions.map(s => (
-                  <div key={s.id} className={`flex items-center gap-2 px-3 py-2 hover:bg-base-200 cursor-pointer group ${s.id === activeSessionId ? 'bg-primary/10 border-l-2 border-primary' : ''}`}>
-                    {editingSessionId === s.id ? (
-                      <input
-                        autoFocus
-                        className="input input-xs input-bordered flex-1"
-                        value={editingName}
-                        onChange={e => setEditingName(e.target.value)}
-                        onBlur={() => { handleRenameSession(s.id, editingName); setEditingSessionId(null); }}
-                        onKeyDown={e => { if (e.key === 'Enter') { handleRenameSession(s.id, editingName); setEditingSessionId(null); } if (e.key === 'Escape') setEditingSessionId(null); }}
-                      />
-                    ) : (
-                      <>
-                        <div className="flex-1 min-w-0" onClick={() => { switchToSession(s.id); setSessionDropdownOpen(false); }}>
-                          <div className="font-medium text-sm truncate">{s.name}</div>
-                          <div className="text-xs text-base-content/40">
-                            {s.data?.companyProfile?.companyName && <span>{s.data.companyProfile.companyName} · </span>}
-                            {new Date(s.lastModified).toLocaleDateString()} {new Date(s.lastModified).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}
+            {sessionDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 w-80 bg-base-100 border border-base-300 rounded-lg shadow-xl z-50 overflow-hidden">
+                <div className="flex items-center justify-between p-2 border-b border-base-300 px-3">
+                  <span className="text-xs text-base-content/50 font-medium uppercase tracking-wider">Clients</span>
+                  <button
+                    onClick={() => { setSessionDropdownOpen(false); setShowClientLibrary(true); }}
+                    className="btn btn-ghost btn-xs text-primary gap-1"
+                  >
+                    <FolderOpen size={11} /> Library
+                  </button>
+                </div>
+                <div className="max-h-60 overflow-y-auto">
+                  {sessions.map(s => (
+                    <div key={s.id} className={`flex items-center gap-2 px-3 py-2 hover:bg-base-200 cursor-pointer group ${s.id === activeSessionId ? 'bg-primary/10 border-l-2 border-primary' : ''}`}>
+                      {editingSessionId === s.id ? (
+                        <input
+                          autoFocus
+                          className="input input-xs input-bordered flex-1"
+                          value={editingName}
+                          onChange={e => setEditingName(e.target.value)}
+                          onBlur={() => { handleRenameSession(s.id, editingName); setEditingSessionId(null); }}
+                          onKeyDown={e => { if (e.key === 'Enter') { handleRenameSession(s.id, editingName); setEditingSessionId(null); } if (e.key === 'Escape') setEditingSessionId(null); }}
+                        />
+                      ) : (
+                        <>
+                          <div className="flex-1 min-w-0" onClick={() => { switchToSession(s.id); setSessionDropdownOpen(false); }}>
+                            <div className="font-medium text-sm truncate">{s.name}</div>
+                            <div className="text-xs text-base-content/40">
+                              {s.data?.companyProfile?.companyName && <span>{s.data.companyProfile.companyName} · </span>}
+                              {new Date(s.lastModified).toLocaleDateString()} {new Date(s.lastModified).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}
+                            </div>
                           </div>
-                        </div>
-                        <button
-                          className="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100"
-                          onClick={(e) => { e.stopPropagation(); setEditingSessionId(s.id); setEditingName(s.name); }}
-                          title="Rename"
-                        >✏️</button>
-                        {sessions.length > 1 && (
                           <button
-                            className="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 text-error"
-                            onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
-                            title="Delete"
-                          >🗑️</button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                ))}
+                            className="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100"
+                            onClick={(e) => { e.stopPropagation(); setEditingSessionId(s.id); setEditingName(s.name); }}
+                            title="Rename"
+                          >✏️</button>
+                          <button
+                            className="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100"
+                            onClick={(e) => { e.stopPropagation(); handleDuplicateSession(s.id); setSessionDropdownOpen(false); }}
+                            title="Duplicate"
+                          >📋</button>
+                          {sessions.length > 1 && (
+                            <button
+                              className="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 text-error"
+                              onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                              title="Delete"
+                            >🗑️</button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="border-t border-base-300 p-2">
+                  <button
+                    onClick={() => { handleNewSession(); setSessionDropdownOpen(false); }}
+                    className="btn btn-ghost btn-sm btn-block justify-start gap-2 text-primary"
+                  >
+                    <span className="text-lg leading-none">+</span> New Client
+                  </button>
+                </div>
               </div>
-              <div className="border-t border-base-300 p-2">
-                <button
-                  onClick={() => { handleNewSession(); setSessionDropdownOpen(false); }}
-                  className="btn btn-ghost btn-sm btn-block justify-start gap-2 text-primary"
-                >
-                  <span className="text-lg leading-none">+</span> New Session
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         {/* Company name & tagline inputs */}
         <div className="flex items-center gap-3 flex-1">
@@ -892,18 +943,20 @@ const App: React.FC = () => {
 
           <div className="w-px h-6 bg-base-content/15 mx-1"></div>
 
-          {/* New Session + Export/Import */}
-          <div className="flex items-center gap-2">
-            <button onClick={() => handleNewSession()} className="btn btn-outline btn-xs gap-1 text-primary">
-              <span className="text-sm leading-none">+</span> New
-            </button>
-            <button onClick={handleExportModel} className="btn btn-outline btn-xs gap-1">
-              <Download size={12} /> Export
-            </button>
-            <button onClick={handleImportModel} className="btn btn-outline btn-xs gap-1">
-              <Upload size={12} /> Import
-            </button>
-          </div>
+          {/* New Session + Export/Import — CONSULTANT ONLY */}
+          {isConsultant && (
+            <div className="flex items-center gap-2">
+              <button onClick={() => handleNewSession()} className="btn btn-outline btn-xs gap-1 text-primary">
+                <span className="text-sm leading-none">+</span> New Client
+              </button>
+              <button onClick={handleExportModel} className="btn btn-outline btn-xs gap-1">
+                <Download size={12} /> Export
+              </button>
+              <button onClick={handleImportModel} className="btn btn-outline btn-xs gap-1">
+                <Upload size={12} /> Import
+              </button>
+            </div>
+          )}
 
           <div className="w-px h-6 bg-base-content/15 mx-1"></div>
 
@@ -968,6 +1021,21 @@ const App: React.FC = () => {
       <div className="px-4 py-1.5 bg-base-200 border-t border-base-300 text-center">
         <span className="text-xs text-base-content/40">© 2026 Right Lane Brands, Inc. All Rights Reserved.</span>
       </div>
+
+      {/* Client Library Modal — CONSULTANT ONLY */}
+      {isConsultant && showClientLibrary && (
+        <ClientLibrary
+          clients={sessions.map(s => ({ id: s.id, name: s.name, notes: s.notes || '', lastModified: s.lastModified, data: s.data }))}
+          activeClientId={activeSessionId}
+          onOpen={(id) => { switchToSession(id); }}
+          onNew={() => { handleNewSession(); setShowClientLibrary(false); }}
+          onDuplicate={(id) => { handleDuplicateSession(id); setShowClientLibrary(false); }}
+          onDelete={handleDeleteSession}
+          onRename={handleRenameSession}
+          onUpdateNotes={handleUpdateNotes}
+          onClose={() => setShowClientLibrary(false)}
+        />
+      )}
 
       {/* Export Reports Modal */}
       {showExportModal && (

@@ -32,8 +32,10 @@ export const StandaloneApp: React.FC = () => {
         body: JSON.stringify({ code: password.trim() }),
       });
       if (res.ok) {
-        // Store access code for AI chat
+        const data = await res.json();
+        // Store access code and role for AI chat + UI routing
         localStorage.setItem('tm_access_code', password.trim().toUpperCase());
+        localStorage.setItem('tm_user_role', data.role || 'client');
         setAuthenticated(true);
         setRoute('app');
         window.location.hash = '#app';
@@ -44,6 +46,7 @@ export const StandaloneApp: React.FC = () => {
       // Fallback to hardcoded check if API is down
       if (password.trim().toUpperCase() === 'TRUEMARGIN2026') {
         localStorage.setItem('tm_access_code', 'TRUEMARGIN2026');
+        localStorage.setItem('tm_user_role', 'consultant');
         setAuthenticated(true);
         setRoute('app');
         window.location.hash = '#app';
