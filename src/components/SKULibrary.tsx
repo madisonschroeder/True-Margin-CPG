@@ -18,7 +18,7 @@ export const SKULibrary: React.FC<SKULibraryProps> = ({ state, onChange, company
     onChange({ ...state, globalOverheadPct: pct, globalOverheadEnabled: undefined });
   };
 
-  const updateSKU = (idx: number, key: keyof SKU, value: string | number) => {
+  const updateSKU = (idx: number, key: keyof SKU, value: string | number | undefined) => {
     const updated = { ...state, skus: state.skus.map((s, i) => i === idx ? { ...s, [key]: value } : s) };
     onChange(updated);
   };
@@ -121,6 +121,24 @@ export const SKULibrary: React.FC<SKULibraryProps> = ({ state, onChange, company
         </div>
       </div>
 
+      {/* Tier Summary */}
+      {(() => {
+        const tiers = [...new Set(state.skus.map(s => s.tier).filter(Boolean))] as string[];
+        if (tiers.length === 0) return null;
+        return (
+          <div className="px-2 py-2 bg-base-200 rounded-lg">
+            <span className="text-xs font-semibold text-base-content/50 uppercase">Product Tiers: </span>
+            <span className="text-sm">{tiers.map((t, i) => {
+              const count = state.skus.filter(s => s.tier === t).length;
+              return <span key={t} className="badge badge-sm badge-outline mr-1">{t} ({count})</span>;
+            })}</span>
+            {state.skus.some(s => !s.tier) && (
+              <span className="badge badge-sm badge-ghost ml-1">Unassigned ({state.skus.filter(s => !s.tier).length})</span>
+            )}
+          </div>
+        );
+      })()}
+
       {/* SKU Cards */}
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
         {state.skus.map((sku, idx) => {
@@ -143,6 +161,18 @@ export const SKULibrary: React.FC<SKULibraryProps> = ({ state, onChange, company
                       <Trash2 size={14} /> Remove
                     </button>
                   )}
+                </div>
+
+                {/* Tier Assignment */}
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-semibold text-base-content/50 uppercase whitespace-nowrap">Tier:</span>
+                  <input
+                    type="text"
+                    className="input input-bordered input-xs flex-1 font-medium"
+                    value={sku.tier || ''}
+                    onChange={(e) => updateSKU(idx, 'tier', e.target.value || undefined)}
+                    placeholder="e.g. Savory, Sweet, Premium"
+                  />
                 </div>
 
                 {/* BOM Inputs */}

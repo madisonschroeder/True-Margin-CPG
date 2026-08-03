@@ -16,6 +16,14 @@ export interface SKU {
   unitsPerCase: number;
   casesPerPallet: number;
   volumeMixPct: number; // what % of total company volume is this SKU (0-1, all SKUs should sum to 1)
+  tier?: string;  // Product tier (e.g., 'Savory', 'Sweet', 'Premium')
+}
+
+// Per-tier margin overrides for channel pricing
+export interface TierMargins {
+  retailerMarginPct: number;
+  distMarginPct: number;
+  productMarginPct: number;
 }
 
 export interface SKULibraryState {
@@ -130,6 +138,8 @@ export interface ChannelInputs {
   unitsPerCase: number;
   // Per-channel SKU volume mix (skuId → 0-1 fraction; should sum to 1.0)
   skuVolumeMix?: Record<string, number>;
+  // Per-tier margin overrides (tier name → margins)
+  tierOverrides?: Record<string, TierMargins>;
 }
 
 // Computed channel outputs

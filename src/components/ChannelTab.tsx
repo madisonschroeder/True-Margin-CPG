@@ -1,6 +1,6 @@
 import React from 'react';
-import { ChannelInputs, CogsFreightState, SKULibraryState, LogisticsState } from '../types';
-import { computeChannelOutputs, resolveGlobalOverheadPct } from '../utils/calculations';
+import { ChannelInputs, CogsFreightState, SKULibraryState, LogisticsState, TierMargins } from '../types';
+import { computeChannelOutputs, resolveGlobalOverheadPct, buildCogsFreightFromSKUAndLogistics } from '../utils/calculations';
 import { fmtCurrency, fmtPct } from '../utils/formatters';
 import { InputRow, OutputRow, SectionHeader } from './InputRow';
 
@@ -49,6 +49,91 @@ export const ChannelTab: React.FC<ChannelTabProps> = ({ channel, cogsState, onCh
     onChange({ ...channel, skuVolumeMix: newMix });
   };
 
+  // Tier support
+  const availableTiers = React.useMemo(() => {
+    const tiers = [...new Set(skuLibrary.skus.map(s => s.tier).filter(Boolean))] as string[];
+    return tiers;
+  }, [skuLibrary.skus]);
+  const hasTiers = availableTiers.length > 0;
+
+  const [activeTier, setActiveTier] = React.useState<string | null>(null); // null = blended
+
+  // Compute tier-specific outputs when a tier is selected
+  const tierOut = React.useMemo(() => {
+    if (!activeTier || !hasTiers) return null;
+
+    const tierSkus = skuLibrary.skus.filter(s => s.tier === activeTier);
+    if (tierSkus.length === 0) return null;
+
+    const tierSkuIds = tierSkus.map(s => s.id);
+
+    // Build tier-specific volume mix (renormalized to sum to 1 within the tier)
+    const tierMix: Record<string, number> = {};
+    let tierMixTotal = 0;
+    for (const sku of tierSkus) {
+      const w = mix[sku.id] ?? 0;
+      tierMix[sku.id] = w;
+      tierMixTotal += w;
+    }
+    // Normalize
+    if (tierMixTotal > 0) {
+      for (const id of Object.keys(tierMix)) {
+        tierMix[id] = tierMix[id] / tierMixTotal;
+      }
+    } else {
+      // Equal split if no mix set
+      const equal = 1 / tierSkus.length;
+      for (const sku of tierSkus) {
+        tierMix[sku.id] = equal;
+      }
+    }
+
+    // Build COGS state for just this tier's SKUs
+    const tierCogsState = buildCogsFreightFromSKUAndLogistics(
+      skuLibrary,
+      logistics,
+      tierSkuIds,
+      tierMix,
+      companyOHPerUnit,
+    );
+
+    // Get tier margin overrides (or fall back to channel defaults)
+    const tierMargins = channel.tierOverrides?.[activeTier];
+    const tierChannel: typeof channel = tierMargins ? {
+      ...channel,
+      retailerMarginPct: tierMargins.retailerMarginPct,
+      distMarginPct: tierMargins.distMarginPct,
+      productMarginPct: tierMargins.productMarginPct,
+      skuVolumeMix: tierMix,
+    } : {
+      ...channel,
+      skuVolumeMix: tierMix,
+    };
+
+    return computeChannelOutputs(tierChannel, tierCogsState, logistics, skuLibrary);
+  }, [activeTier, hasTiers, skuLibrary, logistics, channel, mix, companyOHPerUnit]);
+
+  // Which outputs to display — tier-specific or channel-level blended
+  const displayOut = tierOut || out;
+  const displayPlantCogs = displayOut.blendedCogs - effectiveOH;
+
+  // Helper to update tier margin overrides
+  const updateTierMargin = (tier: string, field: keyof TierMargins, value: number) => {
+    const current = channel.tierOverrides || {};
+    const currentTier = current[tier] || {
+      retailerMarginPct: channel.retailerMarginPct,
+      distMarginPct: channel.distMarginPct,
+      productMarginPct: channel.productMarginPct,
+    };
+    onChange({
+      ...channel,
+      tierOverrides: {
+        ...current,
+        [tier]: { ...currentTier, [field]: value },
+      },
+    });
+  };
+
   return (
     <div className="space-y-1">
       {/* Editable Channel Name */}
@@ -74,51 +159,98 @@ export const ChannelTab: React.FC<ChannelTabProps> = ({ channel, cogsState, onCh
           />
         </div>
       </div>
+
+      {/* Tier Selector */}
+      {hasTiers && (
+        <div className="flex items-center gap-1 px-2 py-2 bg-base-200 rounded-lg mb-2 flex-wrap">
+          <span className="text-xs font-semibold text-base-content/50 uppercase mr-2">View Tier:</span>
+          <button
+            className={`btn btn-xs ${activeTier === null ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setActiveTier(null)}
+          >
+            All (Blended)
+          </button>
+          {availableTiers.map(tier => (
+            <button
+              key={tier}
+              className={`btn btn-xs ${activeTier === tier ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setActiveTier(tier)}
+            >
+              {tier}
+              <span className="badge badge-xs ml-1">{skuLibrary.skus.filter(s => s.tier === tier).length}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {/* Left Column — Pricing & GtN */}
         <div className="space-y-1">
+          {activeTier && (
+            <div className="alert alert-info py-2 mb-2">
+              <span className="text-sm">Viewing <strong>{activeTier}</strong> tier — {skuLibrary.skus.filter(s => s.tier === activeTier).length} SKU(s). Margins are tier-specific; deductions & working capital remain channel-level.</span>
+            </div>
+          )}
           <SectionHeader title="TIERED PRICING ARCHITECTURE" />
-          <OutputRow label="MSRP" value={fmtCurrency(out.msrp)} />
-          <InputRow label="Retailer Margin %" value={channel.retailerMarginPct} onChange={(v) => update('retailerMarginPct', v)} type="percent" highlight />
-          <OutputRow label="Retailer Margin $" value={fmtCurrency(out.retailerMarginDollar)} />
-          <OutputRow label="Price to Retailer" value={fmtCurrency(out.priceToRetailer)} accent />
-          <InputRow label="Dist Margin %" value={channel.distMarginPct} onChange={(v) => update('distMarginPct', v)} type="percent" highlight />
-          <OutputRow label="Dist Margin $" value={fmtCurrency(out.distMarginDollar)} />
-          <OutputRow label="Price to Distrib." value={fmtCurrency(out.priceToDistrib)} accent />
+          <OutputRow label="MSRP" value={fmtCurrency(displayOut.msrp)} />
+          <InputRow
+            label="Retailer Margin %"
+            value={activeTier && channel.tierOverrides?.[activeTier] ? channel.tierOverrides[activeTier].retailerMarginPct : channel.retailerMarginPct}
+            onChange={(v) => activeTier ? updateTierMargin(activeTier, 'retailerMarginPct', v) : update('retailerMarginPct', v)}
+            type="percent"
+            highlight
+          />
+          <OutputRow label="Retailer Margin $" value={fmtCurrency(displayOut.retailerMarginDollar)} />
+          <OutputRow label="Price to Retailer" value={fmtCurrency(displayOut.priceToRetailer)} accent />
+          <InputRow
+            label="Dist Margin %"
+            value={activeTier && channel.tierOverrides?.[activeTier] ? channel.tierOverrides[activeTier].distMarginPct : channel.distMarginPct}
+            onChange={(v) => activeTier ? updateTierMargin(activeTier, 'distMarginPct', v) : update('distMarginPct', v)}
+            type="percent"
+            highlight
+          />
+          <OutputRow label="Dist Margin $" value={fmtCurrency(displayOut.distMarginDollar)} />
+          <OutputRow label="Price to Distrib." value={fmtCurrency(displayOut.priceToDistrib)} accent />
           {effectiveOH > 0 ? (
             <>
-              <OutputRow label="Plant COGS" value={fmtCurrency(plantCogs)} />
+              <OutputRow label="Plant COGS" value={fmtCurrency(displayPlantCogs)} />
               <OutputRow label={`+ Company OH (${(goPct * 100).toFixed(0)}%)`} value={fmtCurrency(effectiveOH)} />
-              <OutputRow label="Loaded COGS" value={fmtCurrency(out.blendedCogs)} bold />
+              <OutputRow label="Loaded COGS" value={fmtCurrency(displayOut.blendedCogs)} bold />
             </>
           ) : (
-            <OutputRow label="COGS" value={fmtCurrency(out.blendedCogs)} />
+            <OutputRow label="COGS" value={fmtCurrency(displayOut.blendedCogs)} />
           )}
-          <OutputRow label="Brand Margin $" value={fmtCurrency(out.brandMarginDollar)} />
-          <InputRow label="Product Margin %" value={channel.productMarginPct} onChange={(v) => update('productMarginPct', v)} type="percent" highlight />
+          <OutputRow label="Brand Margin $" value={fmtCurrency(displayOut.brandMarginDollar)} />
+          <InputRow
+            label="Product Margin %"
+            value={activeTier && channel.tierOverrides?.[activeTier] ? channel.tierOverrides[activeTier].productMarginPct : channel.productMarginPct}
+            onChange={(v) => activeTier ? updateTierMargin(activeTier, 'productMarginPct', v) : update('productMarginPct', v)}
+            type="percent"
+            highlight
+          />
 
           <SectionHeader title="DEDUCTIONS" />
           <InputRow label="Early Pay %" value={channel.earlyPayPct} onChange={(v) => update('earlyPayPct', v)} type="percent" highlight />
-          <OutputRow label="Early Pay $" value={fmtCurrency(out.earlyPayDollar)} />
+          <OutputRow label="Early Pay $" value={fmtCurrency(displayOut.earlyPayDollar)} />
           <InputRow label="Broker Comm %" value={channel.brokerCommPct} onChange={(v) => update('brokerCommPct', v)} type="percent" highlight />
-          <OutputRow label="Broker Comm $" value={fmtCurrency(out.brokerCommDollar)} />
+          <OutputRow label="Broker Comm $" value={fmtCurrency(displayOut.brokerCommDollar)} />
           <InputRow label="Spoilage %" value={channel.spoilagePct} onChange={(v) => update('spoilagePct', v)} type="percent" highlight />
-          <OutputRow label="Spoilage $" value={fmtCurrency(out.spoilageDollar)} />
+          <OutputRow label="Spoilage $" value={fmtCurrency(displayOut.spoilageDollar)} />
           <InputRow label="Other Deductions %" value={channel.otherDeductionsPct} onChange={(v) => update('otherDeductionsPct', v)} type="percent" highlight />
-          <OutputRow label="Other Deductions $" value={fmtCurrency(out.otherDeductionsDollar)} />
+          <OutputRow label="Other Deductions $" value={fmtCurrency(displayOut.otherDeductionsDollar)} />
           <SectionHeader title="TRADE SPEND" />
           <InputRow label="Trade Spend %" value={channel.tradeSpendPct} onChange={(v) => update('tradeSpendPct', v)} type="percent" highlight />
-          <OutputRow label="Trade Spend $" value={fmtCurrency(out.tradeSpendDollar)} />
+          <OutputRow label="Trade Spend $" value={fmtCurrency(displayOut.tradeSpendDollar)} />
           <InputRow label="Slotting: $/SKU/Store" value={channel.slottingPerSkuPerStore} onChange={(v) => update('slottingPerSkuPerStore', v)} type="currency" highlight />
           <InputRow label="Est. Units/Wk/Store (UPSW)" value={channel.estUnitsPerWeekPerStore} onChange={(v) => update('estUnitsPerWeekPerStore', v)} highlight />
-          <OutputRow label="Slotting: Cost / Unit" value={fmtCurrency(out.slottingCostPerUnit)} />
+          <OutputRow label="Slotting: Cost / Unit" value={fmtCurrency(displayOut.slottingCostPerUnit)} />
 
-          <OutputRow label="Freight Out $" value={fmtCurrency(out.freightOutDollar)} />
+          <OutputRow label="Freight Out $" value={fmtCurrency(displayOut.freightOutDollar)} />
           <div className="divider my-1"></div>
-          <OutputRow label="TOTAL DEDUCTIONS" value={fmtCurrency(out.totalDeductions)} bold />
-          <OutputRow label="NET REVENUE" value={fmtCurrency(out.netRevenue)} accent bold />
-          <OutputRow label="CONTRIBUTION MARGIN $" value={fmtCurrency(out.contributionMarginDollar)} accent bold />
-          <OutputRow label="CONTRIBUTION MARGIN %" value={<>{fmtPct(out.contributionMarginPct)}{out.contributionMarginPct < 0.25 ? <span className="badge badge-sm badge-error gap-1 ml-2 text-[10px]">⚠️ Below 25%</span> : out.contributionMarginPct < 0.40 ? <span className="badge badge-sm badge-warning gap-1 ml-2 text-[10px]">✅ CPG Avg</span> : <span className="badge badge-sm badge-success gap-1 ml-2 text-[10px]">🌟 Best-in-Class</span>}</>} accent />
+          <OutputRow label="TOTAL DEDUCTIONS" value={fmtCurrency(displayOut.totalDeductions)} bold />
+          <OutputRow label="NET REVENUE" value={fmtCurrency(displayOut.netRevenue)} accent bold />
+          <OutputRow label="CONTRIBUTION MARGIN $" value={fmtCurrency(displayOut.contributionMarginDollar)} accent bold />
+          <OutputRow label="CONTRIBUTION MARGIN %" value={<>{fmtPct(displayOut.contributionMarginPct)}{displayOut.contributionMarginPct < 0.25 ? <span className="badge badge-sm badge-error gap-1 ml-2 text-[10px]">⚠️ Below 25%</span> : displayOut.contributionMarginPct < 0.40 ? <span className="badge badge-sm badge-warning gap-1 ml-2 text-[10px]">✅ CPG Avg</span> : <span className="badge badge-sm badge-success gap-1 ml-2 text-[10px]">🌟 Best-in-Class</span>}</>} accent />
         </div>
 
         {/* Right Column — SKU Volume Mix, Mixers & Working Capital */}
@@ -186,21 +318,21 @@ export const ChannelTab: React.FC<ChannelTabProps> = ({ channel, cogsState, onCh
           ))}
           {effectiveOH > 0 ? (
             <>
-              <OutputRow label="Plant COGS $" value={fmtCurrency(plantCogs)} />
+              <OutputRow label="Plant COGS $" value={fmtCurrency(displayPlantCogs)} />
               <OutputRow label="+ Company OH $" value={fmtCurrency(effectiveOH)} />
-              <OutputRow label="Loaded COGS $" value={fmtCurrency(out.blendedCogs)} accent />
+              <OutputRow label="Loaded COGS $" value={fmtCurrency(displayOut.blendedCogs)} accent />
             </>
           ) : (
-            <OutputRow label="Blended COGS $" value={fmtCurrency(out.blendedCogs)} accent />
+            <OutputRow label="Blended COGS $" value={fmtCurrency(displayOut.blendedCogs)} accent />
           )}
-          <OutputRow label="Blended Freight $" value={fmtCurrency(out.blendedFreight)} />
+          <OutputRow label="Blended Freight $" value={fmtCurrency(displayOut.blendedFreight)} />
           <InputRow label="Blended Inventory Days" value={channel.blendedInventoryDays} onChange={(v) => update('blendedInventoryDays', v)} highlight />
 
           <SectionHeader title="WORKING CAPITAL TERMS" subtitle="INPUTS" />
           <OutputRow label="Days in Inventory" value={channel.blendedInventoryDays.toString()} />
           <InputRow label="AR Terms: Days to Get Paid" value={channel.arDays} onChange={(v) => update('arDays', v)} highlight />
           <InputRow label="AP Terms: Days to Pay Supplier" value={channel.apDays} onChange={(v) => update('apDays', v)} highlight />
-          <OutputRow label="Cash Conversion Cycle (Days)" value={out.cashConversionCycle.toString()} accent />
+          <OutputRow label="Cash Conversion Cycle (Days)" value={displayOut.cashConversionCycle.toString()} accent />
 
           <div className="alert alert-info mt-4 text-sm">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current shrink-0 w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
